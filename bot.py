@@ -19,8 +19,9 @@ from dotenv import load_dotenv
 
 from cyphergoat import CypherGoatClient, CypherGoatError
 
+_log_level = logging.DEBUG if os.getenv("BOT_DEBUG") else logging.INFO
 logging.basicConfig(
-    level=logging.INFO,
+    level=_log_level,
     format="%(asctime)s %(levelname)s %(message)s",
     handlers=[
         logging.StreamHandler(),
@@ -43,7 +44,19 @@ COINS_FILE = pathlib.Path(__file__).parent / "coins.json"
 with open(COINS_FILE) as f:
     ALL_COINS: list[dict] = json.load(f)
 
-KYC_LABELS = {0: "No KYC", 1: "Low KYC", 2: "Medium KYC", 3: "High KYC"}
+
+BLOCKED_EXCHANGES: set[str] = {
+    "stealthex",
+    "changenow",
+    "fixedfloat",
+    "simpleswap",
+    "exolix",
+    "nanswap",
+}
+
+
+def is_blocked(exchange: str) -> bool:
+    return exchange.lower() in BLOCKED_EXCHANGES
 
 # HELP_TEXT is an alias — both commands show the same content
 HELP_TEXT = None  # assigned after WELCOME_TEXT is defined
@@ -208,7 +221,7 @@ async def handle_estimate(args: list[str], cg: CypherGoatClient, state: ContactS
     except CypherGoatError as e:
         return f"Error getting estimate: {e}", None
 
-    rates = result.get("rates", {}).get("Results", [])
+    rates = [r for r in result.get("rates", {}).get("Results", []) if not is_blocked(r.get("Exchange", ""))]
     min_amount = result.get("min", 0)
 
     if not rates:
@@ -229,8 +242,8 @@ async def handle_estimate(args: list[str], cg: CypherGoatClient, state: ContactS
 
     lines = [header, ""]
     for i, r in enumerate(rates, 1):
-        kyc = KYC_LABELS.get(r.get("KYCScore", 0), "?")
-        lines.append(f"{i:>2}. {r['Exchange']:<16} {r['Amount']:.6g} {coin2.upper()}  [{kyc}]")
+        kyc = r.get("KYCScore", "?")
+        lines.append(f"{i:>2}. {r['Exchange']:<16} {r['Amount']:.6g} {coin2.upper()}  [KYC {kyc}]")
 
     lines += ["", "Reply with a number to swap, or `cancel` to abort."]
     return "\n".join(lines), pending
@@ -302,7 +315,7 @@ async def handle_swap(
         except CypherGoatError as e:
             return f"Error fetching rates: {e}", None
 
-        rates = result.get("rates", {}).get("Results", [])
+        rates = [r for r in result.get("rates", {}).get("Results", []) if not is_blocked(r.get("Exchange", ""))]
         min_amount = result.get("min", 0)
 
         if not rates:
@@ -334,6 +347,9 @@ async def handle_swap(
         # Direct execution: swap <amount> <from> <to> <exchange> <address>
         partner = args[3]
         address = args[4]
+
+        if is_blocked(partner):
+            return f"Exchange '{partner}' is not available.", None
 
         try:
             tx = await cg.swap(coin1, network1, coin2, network2, amount, partner, address)
@@ -452,6 +468,14 @@ async def send_message(ws, contact_name: str, text: str):
     await ws.send(payload)
 
 
+async def accept_contact_request(ws, req_id: int, contact_name: str):
+    corr_id = str(uuid.uuid4())[:8]
+    name_ref = f'"{contact_name}"' if " " in contact_name else contact_name
+    cmd = f"/ac {name_ref}"
+    payload = json.dumps({"corrId": corr_id, "cmd": cmd})
+    await ws.send(payload)
+
+
 WELCOME_TEXT = """\
 *CypherGoat Swap Bot*
 Swap crypto privately across 15+ exchanges.
@@ -487,22 +511,52 @@ async def _send_welcome(ws, contact_name: str):
     log.info("Sent welcome to %r", contact_name)
 
 
-def extract_contact_connected(event: dict) -> Optional[tuple[int, str]]:
-    """Return (contactId, displayName) when a new contact connection is fully established."""
+def extract_contact_ready(event: dict) -> Optional[tuple[Optional[int], str]]:
+    """Return contact info when a contact can receive direct messages."""
     resp = event.get("resp", {})
-    if resp.get("type") != "contactConnected":
+    evt_type = resp.get("type")
+    if evt_type not in ("contactConnected", "contactSndReady", "acceptingContactRequest"):
         return None
     contact = resp.get("contact", {})
-    return contact.get("contactId"), contact.get("localDisplayName", "unknown")
+    name = contact.get("localDisplayName", "unknown")
+    return contact.get("contactId"), name
 
 
 def extract_contact_request(event: dict) -> Optional[tuple[int, str]]:
     """Return (contactRequestId, displayName) if this is an incoming contact request."""
     resp = event.get("resp", {})
-    if resp.get("type") != "receivedContactRequest":
+    # SimpleX uses "contactRequest" in newer versions, "receivedContactRequest" in older ones
+    if resp.get("type") not in ("contactRequest", "receivedContactRequest"):
         return None
     req = resp.get("contactRequest", {})
     return req.get("contactRequestId"), req.get("localDisplayName", "unknown")
+
+
+def extract_pending_contact_requests(event: dict) -> list[tuple[int, str]]:
+    """Return [(contactRequestId, displayName)] from request-list style responses."""
+    resp = event.get("resp", {})
+    results = []
+    reqs = resp.get("contactRequests")
+    if not isinstance(reqs, list):
+        reqs = resp.get("userContactRequests")
+    if not isinstance(reqs, list):
+        return []
+    for req in reqs:
+        req_id = req.get("contactRequestId")
+        name = req.get("localDisplayName", "unknown")
+        if req_id is not None:
+            results.append((req_id, name))
+    return results
+
+
+def extract_cmd_error(event: dict) -> Optional[str]:
+    """Return a CLI command error message if present."""
+    resp = event.get("resp", {})
+    if resp.get("type") != "chatCmdError":
+        return None
+    chat_error = resp.get("chatError", {})
+    error_type = chat_error.get("errorType", {})
+    return error_type.get("message") or chat_error.get("message") or "unknown command error"
 
 
 def extract_messages(event: dict) -> list[tuple[int, str, str]]:
@@ -628,6 +682,7 @@ async def run_bot():
     db = StateDB(DB_PATH)
     cg = CypherGoatClient(API_KEY)
     states: dict[int, ContactState] = {}
+    welcomed_contacts: set[str] = set()
 
     # Restore any pending swaps that survived a previous crash
     for contact_id, contact_name, swap in db.load_all():
@@ -643,6 +698,9 @@ async def run_bot():
             try:
                 log.info("Connected. Bot is running.")
 
+                # Verify connection and log active user
+                await ws.send(json.dumps({"corrId": "init-user", "cmd": "/user"}))
+
                 # Notify users whose swap was interrupted before this connection
                 for contact_id, state in states.items():
                     if state.name:
@@ -654,20 +712,40 @@ async def run_bot():
                     except json.JSONDecodeError:
                         continue
 
-                    # Auto-accept contact requests
+                    evt_type = event.get("resp", {}).get("type")
+                    if evt_type and any(k in evt_type for k in ("contact", "Contact", "request", "Request")):
+                        log.info("Contact event: type=%s", evt_type)
+                    else:
+                        log.debug("Event: type=%s", evt_type)
+
+                    cmd_error = extract_cmd_error(event)
+                    if cmd_error is not None:
+                        log.error("SimpleX command error: %s", cmd_error)
+                        continue
+
+                    # Auto-accept contact requests (live and from /requests on startup)
+                    pending_reqs = extract_pending_contact_requests(event)
+                    for req_id, req_name in pending_reqs:
+                        await accept_contact_request(ws, req_id, req_name)
+                        log.info("Auto-accepted pending request from %r (id=%s)", req_name, req_id)
+
                     req = extract_contact_request(event)
                     if req is not None:
                         req_id, req_name = req
-                        corr_id = str(uuid.uuid4())[:8]
-                        await ws.send(json.dumps({"corrId": corr_id, "cmd": f"/_accept {req_id}"}))
-                        log.info("Auto-accepted contact request from %r (id=%d)", req_name, req_id)
+                        await accept_contact_request(ws, req_id, req_name)
+                        log.info("Auto-accepted contact request from %r (id=%s)", req_name, req_id)
                         continue
 
-                    # Send welcome when connection is fully established
-                    connected = extract_contact_connected(event)
+                    if pending_reqs:
+                        continue
+
+                    # Send welcome once the contact can receive direct messages
+                    connected = extract_contact_ready(event)
                     if connected is not None:
                         _, conn_name = connected
-                        asyncio.create_task(_send_welcome(ws, conn_name))
+                        if conn_name not in welcomed_contacts:
+                            welcomed_contacts.add(conn_name)
+                            asyncio.create_task(_send_welcome(ws, conn_name))
                         continue
 
                     # Handle incoming messages

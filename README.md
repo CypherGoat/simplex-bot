@@ -4,7 +4,7 @@ A [SimpleX Chat](https://simplex.chat) bot that lets users swap cryptocurrency v
 
 Users add the bot as a SimpleX contact and can compare rates across 23+ exchanges, execute swaps, and track transactions — all from within their SimpleX chat.
 
-Try out the CypherGoat SimpleX chat bot [here](https://smp6.simplex.im/a#YZ4lKNnkgww_mI2nPUoldhrRSMTR80N7yRzVIFRtw6g)
+Try out the CypherGoat SimpleX chat bot [here](https://simplex.chat/contact#/?v=2-7&smp=smp%3A%2F%2FPQUV2eL0t7OStZOoAsPEV2QYWt4-xilbakvGUGOItUo%3D%40smp6.simplex.im%2FW2PhxjMgDiW_ixkUzUILX134F-jVaZoI%23%2F%3Fv%3D1-4%26dh%3DMCowBQYDK2VuAyEAk1pA3Z3CHYalX12Km2xy8gbTcr8EFXCwVzPdGkc5WxE%253D%26q%3Dc%26srv%3Dbylepyau3ty4czmn77q4fglvperknl4bi2eb2fdy2bh4jxtf32kf73yd.onion)
 
 ## Features
 
