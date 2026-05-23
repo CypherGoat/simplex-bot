@@ -478,7 +478,7 @@ async def accept_contact_request(ws, req_id: int, contact_name: str):
 
 WELCOME_TEXT = """\
 *CypherGoat Swap Bot*
-Swap crypto privately across 15+ exchanges.
+Swap crypto privately across 20+ exchanges.
 
 *Commands*
 
