@@ -59,7 +59,7 @@ Edit `.env`:
 CYPHERGOAT_API_KEY=your_api_key_here
 SIMPLEX_WS_URL=ws://localhost:5225
 ```
-You can request an api key sending us an email to support@cyphergoat.com
+You can an API key [here](https://developer.cyphergoat.com)
 
 
 ### 5. Run
